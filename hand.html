@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Inverted Hand Square Effect</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0d0d12;
+      color: #fff;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    .stage {
+      position: relative;
+      width: min(92vw, 960px);
+      aspect-ratio: 4 / 3;
+      background: #000;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+    }
+    video { display: none; }
+    .hud {
+      margin-top: 14px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    button {
+      background: #7c3aed;
+      color: #fff;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 0.12s, background 0.15s;
+    }
+    button:hover { background: #6d28d9; transform: scale(1.03); }
+    button:disabled { background: #3f3f46; cursor: not-allowed; transform: none; }
+    .status {
+      font-size: 13px;
+      color: #a1a1aa;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="stage">
+    <video id="webcam" autoplay playsinline></video>
+    <canvas id="output"></canvas>
+  </div>
+
+  <div class="hud">
+    <button id="startBtn">Start Camera</button>
+    <button id="modeBtn" disabled>Tint: Neon Purple/Green</button>
+    <span class="status" id="status">Click "Start Camera" and show both hands (thumb + index finger).</span>
+  </div>
+
+  <script type="module">
+    import { HandLandmarker, FilesetResolver } from "https://jsdelivr.net";
+
+    const video = document.getElementById("webcam");
+    const canvas = document.getElementById("output");
+    const ctx = canvas.getContext("2d");
+    const startBtn = document.getElementById("startBtn");
+    const modeBtn = document.getElementById("modeBtn");
+    const statusEl = document.getElementById("status");
+
+    // Offscreen canvas for the inverted/glitch layer
+    const fxCanvas = document.createElement("canvas");
+    const fxCtx = fxCanvas.getContext("2d");
+
+    let handLandmarker = null;
+    let running = false;
+    let lastVideoTime = -1;
+    let colorMode = 0;
+
+    const MODES = [
+      { name: "Neon Purple/Green", filter: "invert(1) hue-rotate(115deg) saturate(380%) contrast(165%)" },
+      { name: "Classic Negative", filter: "invert(1) contrast(130%)" },
+      { name: "Cyber Thermal", filter: "invert(1) hue-rotate(240deg) saturate(450%) contrast(180%)" }
+    ];
+
+    modeBtn.addEventListener("click", () => {
+      colorMode = (colorMode + 1) % MODES.length;
+      modeBtn.textContent = `Tint: ${MODES[colorMode].name}`;
+    });
+
+    async function initTracker() {
+      statusEl.textContent = "Loading hand-tracking model...";
+      const vision = await FilesetResolver.forVisionTasks(
+        "https://jsdelivr.net/wasm"
+      );
+      handLandmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath:
+            "https://googleapis.com",
+          delegate: "GPU"
+        },
+        runningMode: "VIDEO",
+        numHands: 2,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+    }
+
+    startBtn.addEventListener("click", async () => {
+      startBtn.disabled = true;
+      try {
+        if (!handLandmarker) await initTracker();
+
+        statusEl.textContent = "Requesting webcam access...";
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 960 }, facingMode: "user" },
+          audio: false
+        });
+
+        video.srcObject = stream;
+        await new Promise((resolve) => (video.onloadedmetadata = resolve));
+        video.play();
+
+        canvas.width = fxCanvas.width = video.videoWidth;
+        canvas.height = fxCanvas.height = video.videoHeight;
+
+        running = true;
+        modeBtn.disabled = false;
+        statusEl.textContent = "Active! Hold up both thumbs & index fingers.";
+        requestAnimationFrame(renderLoop);
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Error: Could not access webcam. Make sure camera permissions are allowed.";
+        startBtn.disabled = false;
+      }
+    });
+
+    function renderLoop() {
+      if (!running) return;
+
+      const w = canvas.width;
+      const h = canvas.height;
+
+      // 1. Draw mirrored base webcam frame
+      ctx.save();
+      ctx.translate(w, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, w, h);
+      ctx.restore();
+
+      // 2. Run MediaPipe detection on new video frames
+      let results = null;
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        results = handLandmarker.detectForVideo(video, performance.now());
+      }
+
+      // 3. When 2 hands are detected, build the 4-point polygon
+      if (results && results.landmarks && results.landmarks.length >= 2) {
+        // Sort hands left-to-right in mirrored screen space
+        const hands = results.landmarks.map((lm) => {
+          // Mirror X coordinate so it matches the selfie view
+          const thumb = { x: (1 - lm[4].x) * w, y: lm[4].y * h };
+          const index = { x: (1 - lm[8].x) * w, y: lm[8].y * h };
+          const centerX = (thumb.x + index.x) * 0.5;
+          return { thumb, index, centerX };
+        }).sort((a, b) => a.centerX - b.centerX);
+
+        const leftHand = hands[0];
+        const rightHand = hands[1];
+
+        // Polygon order: Left Index -> Right Index -> Right Thumb -> Left Thumb
+        // Naturally twists into a bowtie when you cross or invert your fingers!
+        const pts = [
+          leftHand.index,
+          rightHand.index,
+          rightHand.thumb,
+          leftHand.thumb
+        ];
+
+        // Render inverted/neon filtered webcam image onto offscreen canvas
+        fxCtx.save();
+        fxCtx.filter = MODES[colorMode].filter;
+        fxCtx.translate(w, 0);
+        fxCtx.scale(-1, 1);
+        fxCtx.drawImage(video, 0, 0, w, h);
+        fxCtx.restore();
+
+        // Clip and composite the polygon onto the main canvas
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        ctx.lineTo(pts[1].x, pts[1].y);
+        ctx.lineTo(pts[2].x, pts[2].y);
+        ctx.lineTo(pts[3].x, pts[3].y);
+        ctx.closePath();
+
+        ctx.save();
+        ctx.clip();
+        ctx.drawImage(fxCanvas, 0, 0, w, h);
+        ctx.restore();
+
+        // Crisp glowing white/cyan outline just like the TikTok effect
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+        ctx.shadowColor = "#a855f7";
+        ctx.shadowBlur = 12;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      requestAnimationFrame(renderLoop);
+    }
+  </script>
+</body>
+</html>
