@@ -15,17 +15,16 @@
       align-items: center;
       justify-content: center;
       min-height: 100vh;
-      overflow: hidden;
+      padding: 16px;
     }
     .stage {
       position: relative;
-      width: min(92vw, 960px);
+      width: min(92vw, 900px);
       aspect-ratio: 4 / 3;
       background: #000;
       border-radius: 16px;
       overflow: hidden;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
-      border: 1px solid rgba(255, 255, 255, 0.12);
+      border: 1px solid rgba(255, 255, 255, 0.15);
     }
     canvas {
       width: 100%;
@@ -51,40 +50,38 @@
       font-weight: 600;
       font-size: 14px;
       cursor: pointer;
-      transition: transform 0.12s, background 0.15s;
     }
-    button:hover { background: #6d28d9; transform: scale(1.03); }
-    button:disabled { background: #3f3f46; cursor: not-allowed; transform: none; }
+    button:disabled { background: #3f3f46; cursor: not-allowed; }
     .status {
       font-size: 13px;
-      color: #a1a1aa;
+      color: #e4e4e7;
+      background: rgba(255,255,255,0.08);
+      padding: 6px 12px;
+      border-radius: 8px;
     }
   </style>
 </head>
 <body>
 
   <div class="stage">
-    <video id="webcam" autoplay playsinline></video>
+    <video id="webcam" autoplay playsinline muted></video>
     <canvas id="output"></canvas>
   </div>
 
   <div class="hud">
     <button id="startBtn">Start Camera</button>
     <button id="modeBtn" disabled>Tint: Neon Purple/Green</button>
-    <span class="status" id="status">Click "Start Camera" and show both hands (thumb + index finger).</span>
+    <div class="status" id="status">Step 1: Click "Start Camera"</div>
   </div>
 
   <script type="module">
-    import { HandLandmarker, FilesetResolver } from "https://jsdelivr.net";
-
+    const statusEl = document.getElementById("status");
+    const startBtn = document.getElementById("startBtn");
+    const modeBtn = document.getElementById("modeBtn");
     const video = document.getElementById("webcam");
     const canvas = document.getElementById("output");
     const ctx = canvas.getContext("2d");
-    const startBtn = document.getElementById("startBtn");
-    const modeBtn = document.getElementById("modeBtn");
-    const statusEl = document.getElementById("status");
 
-    // Offscreen canvas for the inverted/glitch layer
     const fxCanvas = document.createElement("canvas");
     const fxCtx = fxCanvas.getContext("2d");
 
@@ -101,53 +98,56 @@
 
     modeBtn.addEventListener("click", () => {
       colorMode = (colorMode + 1) % MODES.length;
-      modeBtn.textContent = `Tint: ${MODES[colorMode].name}`;
+      modeBtn.textContent = "Tint: " + MODES[colorMode].name;
     });
-
-    async function initTracker() {
-      statusEl.textContent = "Loading hand-tracking model...";
-      const vision = await FilesetResolver.forVisionTasks(
-        "https://jsdelivr.net/wasm"
-      );
-      handLandmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath:
-            "https://googleapis.com",
-          delegate: "GPU"
-        },
-        runningMode: "VIDEO",
-        numHands: 2,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5
-      });
-    }
 
     startBtn.addEventListener("click", async () => {
       startBtn.disabled = true;
-      try {
-        if (!handLandmarker) await initTracker();
 
-        statusEl.textContent = "Requesting webcam access...";
+      try {
+        // 1. Start webcam FIRST so you immediately see yourself
+        statusEl.textContent = "Step 2: Opening webcam...";
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 960 }, facingMode: "user" },
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
           audio: false
         });
-
         video.srcObject = stream;
-        await new Promise((resolve) => (video.onloadedmetadata = resolve));
-        video.play();
+        await video.play();
 
-        canvas.width = fxCanvas.width = video.videoWidth;
-        canvas.height = fxCanvas.height = video.videoHeight;
+        canvas.width = fxCanvas.width = video.videoWidth || 640;
+        canvas.height = fxCanvas.height = video.videoHeight || 480;
 
         running = true;
-        modeBtn.disabled = false;
-        statusEl.textContent = "Active! Hold up both thumbs & index fingers.";
         requestAnimationFrame(renderLoop);
+
+        // 2. Load MediaPipe Vision module
+        statusEl.textContent = "Step 3: Downloading AI library...";
+        const visionPkg = await import("https://jsdelivr.net");
+        const { HandLandmarker, FilesetResolver } = visionPkg;
+
+        statusEl.textContent = "Step 4: Loading WASM engine...";
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://jsdelivr.net"
+        );
+
+        statusEl.textContent = "Step 5: Downloading hand model (8MB)...";
+        handLandmarker = await HandLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://googleapis.com",
+            delegate: "CPU"
+          },
+          runningMode: "VIDEO",
+          numHands: 2,
+          minHandDetectionConfidence: 0.45,
+          minHandPresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45
+        });
+
+        modeBtn.disabled = false;
+        statusEl.textContent = "READY! Hold up both thumbs & index fingers.";
       } catch (err) {
         console.error(err);
-        statusEl.textContent = "Error: Could not access webcam. Make sure camera permissions are allowed.";
+        statusEl.textContent = "ERROR: " + (err.message || err);
         startBtn.disabled = false;
       }
     });
@@ -158,72 +158,64 @@
       const w = canvas.width;
       const h = canvas.height;
 
-      // 1. Draw mirrored base webcam frame
+      // Draw mirrored webcam feed immediately
       ctx.save();
       ctx.translate(w, 0);
       ctx.scale(-1, 1);
       ctx.drawImage(video, 0, 0, w, h);
       ctx.restore();
 
-      // 2. Run MediaPipe detection on new video frames
-      let results = null;
-      if (video.currentTime !== lastVideoTime) {
+      // Run hand tracking once model finishes loading
+      if (handLandmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
         lastVideoTime = video.currentTime;
-        results = handLandmarker.detectForVideo(video, performance.now());
-      }
+        const results = handLandmarker.detectForVideo(video, performance.now());
 
-      // 3. When 2 hands are detected, build the 4-point polygon
-      if (results && results.landmarks && results.landmarks.length >= 2) {
-        // Sort hands left-to-right in mirrored screen space
-        const hands = results.landmarks.map((lm) => {
-          // Mirror X coordinate so it matches the selfie view
-          const thumb = { x: (1 - lm[4].x) * w, y: lm[4].y * h };
-          const index = { x: (1 - lm[8].x) * w, y: lm[8].y * h };
-          const centerX = (thumb.x + index.x) * 0.5;
-          return { thumb, index, centerX };
-        }).sort((a, b) => a.centerX - b.centerX);
+        if (results.landmarks && results.landmarks.length >= 2) {
+          const hands = results.landmarks.map((lm) => {
+            const thumbTip = lm.at(4);
+            const indexTip = lm.at(8);
+            const thumb = { x: (1 - thumbTip.x) * w, y: thumbTip.y * h };
+            const index = { x: (1 - indexTip.x) * w, y: indexTip.y * h };
+            return { thumb, index, centerX: (thumb.x + index.x) * 0.5 };
+          }).sort((a, b) => a.centerX - b.centerX);
 
-        const leftHand = hands[0];
-        const rightHand = hands[1];
+          const leftHand = hands.at(0);
+          const rightHand = hands.at(1);
 
-        // Polygon order: Left Index -> Right Index -> Right Thumb -> Left Thumb
-        // Naturally twists into a bowtie when you cross or invert your fingers!
-        const pts = [
-          leftHand.index,
-          rightHand.index,
-          rightHand.thumb,
-          leftHand.thumb
-        ];
+          const pts = [
+            leftHand.index,
+            rightHand.index,
+            rightHand.thumb,
+            leftHand.thumb
+          ];
 
-        // Render inverted/neon filtered webcam image onto offscreen canvas
-        fxCtx.save();
-        fxCtx.filter = MODES[colorMode].filter;
-        fxCtx.translate(w, 0);
-        fxCtx.scale(-1, 1);
-        fxCtx.drawImage(video, 0, 0, w, h);
-        fxCtx.restore();
+          fxCtx.save();
+          fxCtx.filter = MODES[colorMode].filter;
+          fxCtx.translate(w, 0);
+          fxCtx.scale(-1, 1);
+          fxCtx.drawImage(video, 0, 0, w, h);
+          fxCtx.restore();
 
-        // Clip and composite the polygon onto the main canvas
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y);
-        ctx.lineTo(pts[1].x, pts[1].y);
-        ctx.lineTo(pts[2].x, pts[2].y);
-        ctx.lineTo(pts[3].x, pts[3].y);
-        ctx.closePath();
+          ctx.save();
+          ctx.beginPath();
+          ctx.moveTo(pts.at(0).x, pts.at(0).y);
+          ctx.lineTo(pts.at(1).x, pts.at(1).y);
+          ctx.lineTo(pts.at(2).x, pts.at(2).y);
+          ctx.lineTo(pts.at(3).x, pts.at(3).y);
+          ctx.closePath();
 
-        ctx.save();
-        ctx.clip();
-        ctx.drawImage(fxCanvas, 0, 0, w, h);
-        ctx.restore();
+          ctx.save();
+          ctx.clip();
+          ctx.drawImage(fxCanvas, 0, 0, w, h);
+          ctx.restore();
 
-        // Crisp glowing white/cyan outline just like the TikTok effect
-        ctx.lineWidth = 3;
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
-        ctx.shadowColor = "#a855f7";
-        ctx.shadowBlur = 12;
-        ctx.stroke();
-        ctx.restore();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+          ctx.shadowColor = "#a855f7";
+          ctx.shadowBlur = 12;
+          ctx.stroke();
+          ctx.restore();
+        }
       }
 
       requestAnimationFrame(renderLoop);
