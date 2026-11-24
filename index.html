@@ -102,30 +102,33 @@
     });
 
     const AT = String.fromCharCode(64);
-    const PKG_BASE = "https://jsdelivr.net" + AT + "mediapipe/tasks-vision" + AT + "0.10.14";
+    const PKG_BASE = "https://cdn.jsdelivr.net/npm/" + AT + "mediapipe/tasks-vision" + AT + "0.10.14";
     const MODULE_URL = PKG_BASE + "/vision_bundle.mjs";
     const WASM_URL = PKG_BASE + "/wasm";
 
-    // Try local repo file first, then official Google mirror, then GitHub jsDelivr mirror
+    // CORS-enabled official LiteRT/MediaPipe mirrors
     const MODEL_MIRRORS = [
       "./hand_landmarker.task",
-      "https://googleapis.com",
-      "https://jsdelivr.net" + AT + "main/examples/hand_landmarker/raspberry_pi/hand_landmarker.task"
+      "https://huggingface.co",
+      "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
     ];
 
     async function fetchModelBuffer() {
+      const errors = [];
       for (const url of MODEL_MIRRORS) {
         try {
           const res = await fetch(url);
           if (res.ok) {
             const buf = await res.arrayBuffer();
             if (buf.byteLength > 100000) return new Uint8Array(buf);
+          } else {
+            errors.push(url.split("/").slice(0, 3).join("/") + " -> HTTP " + res.status);
           }
         } catch (e) {
-          // Try next mirror
+          errors.push(url.split("/").slice(0, 3).join("/") + " -> " + e.message);
         }
       }
-      throw new Error("Could not download hand_landmarker.task from any mirror.");
+      throw new Error(errors.join(" | "));
     }
 
     startBtn.addEventListener("click", async () => {
@@ -152,7 +155,7 @@
         statusEl.textContent = "Step 4: Loading WASM engine...";
         const vision = await FilesetResolver.forVisionTasks(WASM_URL);
 
-        statusEl.textContent = "Step 5: Fetching hand_landmarker.task...";
+        statusEl.textContent = "Step 5: Downloading hand model (7.8MB)...";
         const modelBuffer = await fetchModelBuffer();
 
         handLandmarker = await HandLandmarker.createFromOptions(vision, {
