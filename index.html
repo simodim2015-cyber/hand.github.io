@@ -101,11 +101,17 @@
       modeBtn.textContent = "Tint: " + MODES[colorMode].name;
     });
 
+    // Build CDN paths safely so the '@' scope never gets stripped
+    const AT = String.fromCharCode(64);
+    const PKG_BASE = "https://cdn.jsdelivr.net/npm/" + AT + "mediapipe/tasks-vision" + AT + "0.10.14";
+    const MODULE_URL = PKG_BASE + "/vision_bundle.mjs";
+    const WASM_URL = PKG_BASE + "/wasm";
+    const MODEL_URL = "https://googleapis.com";
+
     startBtn.addEventListener("click", async () => {
       startBtn.disabled = true;
 
       try {
-        // 1. Start webcam FIRST so you immediately see yourself
         statusEl.textContent = "Step 2: Opening webcam...";
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
@@ -120,20 +126,16 @@
         running = true;
         requestAnimationFrame(renderLoop);
 
-        // 2. Load MediaPipe Vision module
-        statusEl.textContent = "Step 3: Downloading AI library...";
-        const visionPkg = await import("https://jsdelivr.net");
-        const { HandLandmarker, FilesetResolver } = visionPkg;
+        statusEl.textContent = "Step 3: Downloading vision_bundle.mjs...";
+        const { HandLandmarker, FilesetResolver } = await import(MODULE_URL);
 
         statusEl.textContent = "Step 4: Loading WASM engine...";
-        const vision = await FilesetResolver.forVisionTasks(
-          "https://jsdelivr.net"
-        );
+        const vision = await FilesetResolver.forVisionTasks(WASM_URL);
 
-        statusEl.textContent = "Step 5: Downloading hand model (8MB)...";
+        statusEl.textContent = "Step 5: Downloading hand_landmarker.task...";
         handLandmarker = await HandLandmarker.createFromOptions(vision, {
           baseOptions: {
-            modelAssetPath: "https://googleapis.com",
+            modelAssetPath: MODEL_URL,
             delegate: "CPU"
           },
           runningMode: "VIDEO",
@@ -158,14 +160,12 @@
       const w = canvas.width;
       const h = canvas.height;
 
-      // Draw mirrored webcam feed immediately
       ctx.save();
       ctx.translate(w, 0);
       ctx.scale(-1, 1);
       ctx.drawImage(video, 0, 0, w, h);
       ctx.restore();
 
-      // Run hand tracking once model finishes loading
       if (handLandmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
         lastVideoTime = video.currentTime;
         const results = handLandmarker.detectForVideo(video, performance.now());
